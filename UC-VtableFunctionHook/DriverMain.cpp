@@ -99,37 +99,47 @@ NTSTATUS __fastcall HookFunction(ULONG64 arg0, UINT arg1, PVOID arg2, PVOID arg3
 	return OriginalFunction(arg0, arg1, arg2, arg3, arg4);
 }
 
+void InstallHook(const ULONG64 vtable_inst) {
+	ULONG64 vtable_addr = RVA(vtable_inst, (7));
+	ULONG64* vtable = (ULONG64*)vtable_addr;
+	BYTE vindex = (((BYTE)index + (6)) & (0x1F));
+	if (MmIsAddressValid((void*)vtable[vindex])) {
+		*(ULONG64*)&OriginalFunction = vtable[vindex];
+
+		// disable write protect bit in cr0...
+		/* {
+			auto cr0 = __readcr0();
+			cr0 &= (0xfffffffffffeffff);
+			__writecr0(cr0);
+			_disable();
+		}*/
+		dbgprint("vtable[vindex]: 0x%llx\n", vtable[vindex]);
+		vtable[vindex] = (ULONG64)HookFunction;
+
+		// enable write protect bit in cr0...
+		/* {
+			auto cr0 = __readcr0();
+			cr0 |= (0x10000);
+			_enable();
+			__writecr0(cr0);
+		}*/
+	}
+}
+
+
 NTSTATUS DrvEntry(ULONG64 base_address) {
 	uintptr_t drvbase;
 	size_t drvsize;
 	const auto driver_status = find_kernel_module("win32kfull.sys", &drvbase, &drvsize);
 	if (NT_SUCCESS(driver_status)) {
-		const auto vtable_inst = find_pattern(drvbase, drvsize, "\x48\x8D\x05\x00\x00\x00\x00\x41\x83\xC2\x06\x41\x83\xE2\x1F\x4A\x8B\x04\xD0\x4C\x8B\x54\x24\x00\x4C\x89\x54\x24\x00\xFF\x15\x00\x00\x00\x00\x48\x83\xC4\x38\xC3", "xxx????xxxxxxxxxxxxxxxx?xxxx?xx????xxxxx");
-		if (MmIsAddressValid((void*)vtable_inst)) {
-			ULONG64 vtable_addr = RVA(vtable_inst, (7));
-			ULONG64* vtable = (ULONG64*)vtable_addr;
-			BYTE vindex = (((BYTE)index + (6)) & (0x1F));
-			if (MmIsAddressValid((void*)vtable[vindex])) {
-				*(ULONG64*)&OriginalFunction = vtable[vindex];
-
-				// disable write protect bit in cr0...
-				{
-					auto cr0 = __readcr0();
-					cr0 &= (0xfffffffffffeffff);
-					__writecr0(cr0);
-					_disable();
-				}
-				dbgprint("vtable[vindex]: 0x%llx\n", vtable[vindex]);
-				vtable[vindex] = (ULONG64)HookFunction;
-
-				// enable write protect bit in cr0...
-				{
-					auto cr0 = __readcr0();
-					cr0 |= (0x10000);
-					_enable();
-					__writecr0(cr0);
-				}
-				return STATUS_SUCCESS;
+		auto vtable_inst = find_pattern(drvbase, drvsize, "\x48\x8D\x05\x00\x00\x00\x00\x41\x83\xC2\x06\x41\x83\xE2\x1F\x4A\x8B\x04\xD0\x4C\x8B\x54\x24\x00\x4C\x89\x54\x24\x00\xFF\x15\x00\x00\x00\x00\x48\x83\xC4\x38\xC3", "xxx????xxxxxxxxxxxxxxxx?xxxx?xx????xxxxx");
+		if (MmIsAddressValid((void*)vtable_inst) && vtable_inst != 0) {
+			InstallHook(vtable_inst);
+		}
+		else {
+			vtable_inst = find_pattern(drvbase, drvsize, "\x48\x8D\x05\x00\x00\x00\x00\x41\x83\xC1\x06\x41\x83\xE1\x1F\x4A\x8B\x04\xC8\x4C\x8B\x44\x24\x00\x8B\xD7", "xxx????xxxxxxxxxxxxxxxx?xx");
+			if (MmIsAddressValid((void*)vtable_inst)) {
+				InstallHook(vtable_inst);
 			}
 		}
 	}
